@@ -1,73 +1,78 @@
 #include <Arduino.h>
 
-#define BUZZER_PIN 25
-#define BUTTON_PIN 35
+const int buzzerPin = 25; 
+const int buttonPin = 33; 
 
-hw_timer_t *timer = NULL;
-volatile bool buzzerState = false;
-volatile bool buttonPressed = false;
+// โน้ต Octave 6 (อ้างอิงจากรูปที่ 2)
+#define NOTE_C6 1047
+#define NOTE_D6 1175
+#define NOTE_E6 1319
+#define NOTE_F6 1397
+#define NOTE_G6 1568
 
-// ===== Frequencies (Octave 6) =====
-#define NOTE_C6  1047
-#define NOTE_D6  1175
-#define NOTE_E6  1319
-#define NOTE_G6  1568
+// ลำดับโน้ตและจังหวะตามรูปที่ 3
+int melody[] = { NOTE_E6, NOTE_E6, NOTE_E6, NOTE_E6, NOTE_E6, NOTE_E6, NOTE_E6, NOTE_G6, NOTE_C6, NOTE_D6, NOTE_E6 };
+int durations[] = { 2, 2, 4, 2, 2, 4, 2, 2, 2, 2, 8 };
 
-int melody[] = {
-  NOTE_C6, NOTE_D6, NOTE_E6, NOTE_G6,
-  NOTE_G6, NOTE_E6, NOTE_D6, NOTE_C6
-};
+// ความเร็ว 5 ระดับตามโจทย์
+int speeds[] = {250, 180, 120, 80, 40}; 
+volatile int currentSpeedIndex = 2; 
 
-int melodyLength = 8;
-int noteIndex = 0;
+hw_timer_t * timer = NULL;
+volatile bool state = false;
 
-// Speed levels
-int speedLevel = 2;
-int speedFactor[5] = {200, 150, 100, 70, 40};
-
-// ===== Timer ISR =====
-void IRAM_ATTR onTimer() {
-  buzzerState = !buzzerState;
-  digitalWrite(BUZZER_PIN, buzzerState);
+// I/O Interrupt สำหรับปุ่มกด
+void IRAM_ATTR handleButtonPress() {
+  static unsigned long lastTime = 0;
+  if (millis() - lastTime > 200) {
+    currentSpeedIndex = (currentSpeedIndex + 1) % 5;
+    lastTime = millis();
+  }
 }
 
-// ===== Button ISR =====
-void IRAM_ATTR onButton() {
-  buttonPressed = true;
+// Timer Interrupt สำหรับสร้าง Square Wave
+void IRAM_ATTR onTimer() {
+  state = !state;
+  digitalWrite(buzzerPin, state);
+}
+
+void playNote(float frequency) {
+  // --- ขั้นตอนแก้เสียงซ้อนแบบเด็ดขาด ---
+  if (timer != NULL) {
+    timerAlarm(timer, 0, false, 0); // หยุด Alarm
+    timerDetachInterrupt(timer);    // ปลด Interrupt ออกชั่วคราว
+  }
+  
+  digitalWrite(buzzerPin, LOW);    // บังคับขา Pin เป็น LOW
+  state = false;                   // รีเซ็ตตัวแปรสถานะ
+
+  if (frequency > 0) {
+    uint64_t alarmValue = 1000000 / (frequency * 2);
+    timerAttachInterrupt(timer, &onTimer); // ใส่ Interrupt กลับเข้าไปใหม่
+    timerAlarm(timer, alarmValue, true, 0); 
+    timerRestart(timer); 
+  }
 }
 
 void setup() {
-  pinMode(BUZZER_PIN, OUTPUT);
-  pinMode(BUTTON_PIN, INPUT_PULLUP);
-
-  attachInterrupt(BUTTON_PIN, onButton, FALLING);
-
-
-  timer = timerBegin(1000000);
-
-  timerAttachInterrupt(timer, &onTimer);
+  pinMode(buzzerPin, OUTPUT);
+  pinMode(buttonPin, INPUT_PULLUP);
+  
+  // ตั้งค่า I/O Interrupt
+  attachInterrupt(digitalPinToInterrupt(buttonPin), handleButtonPress, FALLING);
+  
+  // เริ่มต้น Timer ที่ 1MHz
+  timer = timerBegin(1000000); 
 }
 
 void loop() {
-  if (buttonPressed) {
-    speedLevel = (speedLevel + 1) % 5;
-    buttonPressed = false;
+  for (int i = 0; i < sizeof(melody)/sizeof(int); i++) {
+    int noteDuration = durations[i] * speeds[currentSpeedIndex];
+    
+    playNote(melody[i]); 
+    delay(noteDuration);
+    
+    playNote(0); // หยุดเสียง (Rest) เพื่อแยกตัวโน้ต
+    delay(50);   // เพิ่มเวลาพักให้นานขึ้นเล็กน้อยเพื่อให้หูแยกแยะได้ชัดขึ้น
   }
-
-  int freq = melody[noteIndex];
-
- 
-  uint32_t halfPeriod = 1000000 / (freq * 2);
-
-
-  timerAlarm(timer, halfPeriod, true, 0);
-  timerStart(timer);
-
-  delay(speedFactor[speedLevel]);
-
-  timerStop(timer);
-  digitalWrite(BUZZER_PIN, LOW);
-
-  noteIndex++;
-  if (noteIndex >= melodyLength) noteIndex = 0;
 }
